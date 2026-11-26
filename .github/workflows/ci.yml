@@ -1,0 +1,106 @@
+name: CI
+
+# Builds the bare template app with every supported RN minor up to npm `latest`
+# (+ `next` when it is a newer rc) on every valid platform / architecture / iOS package manager.
+
+on:
+  push:
+    branches: [main]
+    paths: &build-paths # only files that affect a build; docs-only changes skip CI
+      - 'build-app/**'
+      - 'setup-toolchain/**'
+      - 'scripts/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths: *build-paths
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only these jobs, e.g. "android:0.74:1 ios:0.68:0:pods" (empty = full matrix)'
+        required: false
+  schedule:
+    # Every 3 weeks (cron can't express that): fires weekly, the build jobs only run
+    # in ISO weeks divisible by 3. Catches runner image / registry changes.
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    name: Generate matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      android: ${{ steps.matrix.outputs.android }}
+      ios: ${{ steps.matrix.outputs.ios }}
+      skip: ${{ steps.schedule.outputs.skip }}
+    steps:
+      - id: schedule
+        if: github.event_name == 'schedule'
+        run: |
+          week=$((10#$(date -u +%V)))
+          if (( week % 3 != 0 )); then
+            echo "ISO week $week: not a 3rd week, skipping builds"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: matrix
+        env:
+          ONLY: ${{ inputs.only }} # workflow_dispatch only; empty = full matrix
+        run: node scripts/matrix.js
+
+  android:
+    name: Android RN ${{ matrix.rn }} new-arch=${{ matrix.new-arch }}
+    needs: matrix
+    if: needs.matrix.outputs.skip != 'true' && needs.matrix.outputs.android != '{"include":[]}'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 10 # more parallel Gradle runs get HTTP 429 from Maven Central
+      matrix: ${{ fromJSON(needs.matrix.outputs.android) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./build-app
+        with:
+          platform: android
+          rn-ver: ${{ matrix.rn }}
+          new-arch-enabled: ${{ matrix.new-arch }}
+          module-to-install: none
+          android-arch: x86_64
+
+  ios:
+    name: iOS RN ${{ matrix.rn }} new-arch=${{ matrix.new-arch }} ${{ matrix.pm }}
+    needs: matrix
+    if: needs.matrix.outputs.skip != 'true' && needs.matrix.outputs.ios != '{"include":[]}'
+    runs-on: macos-15
+    timeout-minutes: 90 # a hung runner otherwise holds a macOS slot for the default 6h
+    strategy:
+      fail-fast: false
+      max-parallel: 4 # leave a macOS slot (5 per account) for other repos
+      matrix: ${{ fromJSON(needs.matrix.outputs.ios) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./build-app
+        with:
+          platform: ios
+          rn-ver: ${{ matrix.rn }}
+          new-arch-enabled: ${{ matrix.new-arch }}
+          ios-package-manager: ${{ matrix.pm }}
+          module-to-install: none
+
+  unsupported:
+    name: Rejects invalid combinations
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: resolve.js fails for invalid input
+        run: |
+          expect_fail() { if RN_VERSION=$1 PLATFORM=$2 NEW_ARCH=$3 IOS_PACKAGE_MANAGER=$4 node scripts/resolve.js; then echo "expected failure: $*"; exit 1; fi; }
+          expect_fail 0.67 android 1 pods   # new arch < 0.68
+          expect_fail 0.82 android 0 pods   # old arch removed
+          expect_fail 0.86 ios 1 spm        # spm < 0.87
+          expect_fail 0.80 windows 1 pods   # unknown platform

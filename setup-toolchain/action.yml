@@ -1,0 +1,92 @@
+name: Setup React Native toolchain
+description: Install the Node.js / Java / Ruby / Xcode / CocoaPods versions that a given React Native version builds with
+
+inputs:
+  rn-ver:
+    description: 'React Native version or npm tag: 0.88, 0.88.1, 0.86-stable, latest, next, 0.89.0-rc.3'
+    required: true
+  platform:
+    description: 'android or ios'
+    required: true
+  new-arch-enabled:
+    description: '1, 0 or auto (new arch where available). Only used to validate the combination'
+    required: false
+    default: 'auto'
+  ios-package-manager:
+    description: 'pods or spm. Only used to validate the combination'
+    required: false
+    default: 'pods'
+  node-version:
+    description: 'Override the Node.js version picked for this RN version'
+    required: false
+  java-version:
+    description: 'Override the Java version picked for this RN version'
+    required: false
+  ruby-version:
+    description: 'Override the Ruby version picked for this RN version'
+    required: false
+  xcode-version:
+    description: 'Override the Xcode version picked for this RN version (e.g. 16.4)'
+    required: false
+
+outputs:
+  rn-version:
+    description: 'Exact React Native version'
+    value: ${{ steps.resolve.outputs.rn-version }}
+  new-arch:
+    description: 'Resolved new-arch flag (1 or 0)'
+    value: ${{ steps.resolve.outputs.new-arch }}
+  node-version:
+    value: ${{ steps.resolve.outputs.node-version }}
+    description: 'Node.js version used'
+  java-version:
+    value: ${{ steps.resolve.outputs.java-version }}
+    description: 'Java version used (android)'
+  ruby-version:
+    value: ${{ steps.resolve.outputs.ruby-version }}
+    description: 'Ruby version used (ios)'
+  xcode-version:
+    value: ${{ steps.resolve.outputs.xcode-version }}
+    description: 'Xcode version requested (ios)'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve toolchain
+      id: resolve
+      shell: bash
+      env:
+        RN_VERSION: ${{ inputs.rn-ver }}
+        PLATFORM: ${{ inputs.platform }}
+        NEW_ARCH: ${{ inputs.new-arch-enabled }}
+        IOS_PACKAGE_MANAGER: ${{ inputs.ios-package-manager }}
+        NODE_VERSION: ${{ inputs.node-version }}
+        JAVA_VERSION: ${{ inputs.java-version }}
+        RUBY_VERSION: ${{ inputs.ruby-version }}
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/resolve.js"
+
+    - name: Setup Node.js ${{ steps.resolve.outputs.node-version }}
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.resolve.outputs.node-version }}
+
+    - name: Setup Java ${{ steps.resolve.outputs.java-version }}
+      if: inputs.platform == 'android'
+      uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+      with:
+        distribution: zulu
+        java-version: ${{ steps.resolve.outputs.java-version }}
+
+    - name: Setup Ruby ${{ steps.resolve.outputs.ruby-version }}
+      if: inputs.platform == 'ios'
+      uses: ruby/setup-ruby@145243922b4465b78e04dd66294782c7de45901f # v1.345.0
+      with:
+        ruby-version: ${{ steps.resolve.outputs.ruby-version }}
+
+    - name: Setup Xcode / CocoaPods / yarn
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        XCODE_VERSION: ${{ steps.resolve.outputs.xcode-version }}
+      run: bash "$GITHUB_ACTION_PATH/../scripts/setup-tools.sh"

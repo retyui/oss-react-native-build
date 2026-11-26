@@ -1,0 +1,31 @@
+// Gradle init script (passed with --init-script by build-app.sh).
+// Maven Central answers parallel GitHub runners with HTTP 429; resolve it from
+// Google's mirror of Maven Central instead.
+def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+def central = ['https://repo.maven.apache.org/maven2', 'https://repo1.maven.org/maven2']
+
+def redirect = { repos ->
+  repos.configureEach { repo ->
+    if (repo instanceof MavenArtifactRepository && central.any { repo.url.toString().startsWith(it) }) {
+      repo.url = mirror
+    }
+  }
+}
+
+beforeSettings { settings ->
+  def plugins = settings.pluginManagement.repositories
+  // Mirror before the plugin portal: the portal redirects plugin dependencies
+  // (e.g. gson for foojay-resolver) to Maven Central. Declaring any repository
+  // drops the implicit portal, so add it back.
+  plugins.maven { name = 'MavenCentralMirror'; url = mirror }
+  plugins.gradlePluginPortal()
+  redirect(plugins)
+  if (settings.hasProperty('dependencyResolutionManagement')) { // Gradle 6.8+
+    redirect(settings.dependencyResolutionManagement.repositories)
+  }
+}
+
+allprojects {
+  redirect(repositories)
+  redirect(buildscript.repositories)
+}

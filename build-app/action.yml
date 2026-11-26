@@ -1,0 +1,129 @@
+name: Build React Native app
+description: Create a temporary React Native app (0.60 – latest), install a local library into it and build it for Android or iOS
+
+inputs:
+  rn-ver:
+    description: 'React Native version or npm tag: 0.88, 0.88.1, 0.86-stable, latest, next, 0.89.0-rc.3'
+    required: true
+  platform:
+    description: 'android or ios'
+    required: true
+  module-to-install:
+    description: 'Path to the library to install into the app. `none` builds the bare template app'
+    required: false
+    default: ${{ github.workspace }}
+  new-arch-enabled:
+    description: '1, 0 or auto (new architecture where available: RN >= 0.68)'
+    required: false
+    default: 'auto'
+  ios-package-manager:
+    description: 'iOS dependency manager: pods or spm (RN >= 0.87)'
+    required: false
+    default: 'pods'
+  android-arch:
+    description: 'Android ABIs to build, e.g. "x86_64" or "arm64-v8a,x86_64"'
+    required: false
+    default: 'armeabi-v7a,arm64-v8a,x86,x86_64'
+  app-file:
+    description: 'Optional file (relative to the workspace) that replaces the app entry component App.js/App.tsx'
+    required: false
+  store-artifacts:
+    description: 'Upload the built .apk / .app as a workflow artifact (true or false)'
+    required: false
+    default: 'false'
+  node-version:
+    description: 'Override the Node.js version picked for this RN version'
+    required: false
+  java-version:
+    description: 'Override the Java version picked for this RN version'
+    required: false
+  ruby-version:
+    description: 'Override the Ruby version picked for this RN version'
+    required: false
+  xcode-version:
+    description: 'Override the Xcode version picked for this RN version (e.g. 16.4)'
+    required: false
+
+outputs:
+  rn-version:
+    description: 'Exact React Native version that was built'
+    value: ${{ steps.resolve.outputs.rn-version }}
+  new-arch:
+    description: 'Resolved new-arch flag (1 or 0)'
+    value: ${{ steps.resolve.outputs.new-arch }}
+  app-dir:
+    description: 'Directory of the generated app'
+    value: ${{ steps.build.outputs.app_dir }}
+  app-path:
+    description: 'Path to the built .apk (android) or .app (ios)'
+    value: ${{ steps.build.outputs.app_path }}
+
+runs:
+  using: composite
+  steps:
+    # Same as ../setup-toolchain (a composite action can't `uses:` a sibling at its own ref)
+    - name: Resolve toolchain
+      id: resolve
+      shell: bash
+      env:
+        RN_VERSION: ${{ inputs.rn-ver }}
+        PLATFORM: ${{ inputs.platform }}
+        NEW_ARCH: ${{ inputs.new-arch-enabled }}
+        IOS_PACKAGE_MANAGER: ${{ inputs.ios-package-manager }}
+        NODE_VERSION: ${{ inputs.node-version }}
+        JAVA_VERSION: ${{ inputs.java-version }}
+        RUBY_VERSION: ${{ inputs.ruby-version }}
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: node "$GITHUB_ACTION_PATH/../scripts/resolve.js"
+
+    - name: Setup Node.js ${{ steps.resolve.outputs.node-version }}
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.resolve.outputs.node-version }}
+
+    - name: Setup Java ${{ steps.resolve.outputs.java-version }}
+      if: inputs.platform == 'android'
+      uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+      with:
+        distribution: zulu
+        java-version: ${{ steps.resolve.outputs.java-version }}
+
+    - name: Setup Ruby ${{ steps.resolve.outputs.ruby-version }}
+      if: inputs.platform == 'ios'
+      uses: ruby/setup-ruby@145243922b4465b78e04dd66294782c7de45901f # v1.345.0
+      with:
+        ruby-version: ${{ steps.resolve.outputs.ruby-version }}
+
+    - name: Setup Xcode / CocoaPods / yarn
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        XCODE_VERSION: ${{ steps.resolve.outputs.xcode-version }}
+      run: bash "$GITHUB_ACTION_PATH/../scripts/setup-tools.sh"
+
+    - name: Build ${{ inputs.platform }} (RN ${{ steps.resolve.outputs.rn-version }}, new arch ${{ steps.resolve.outputs.new-arch }})
+      id: build
+      shell: bash
+      env:
+        RN_SPEC: ${{ inputs.rn-ver }}
+        RN_VERSION: ${{ steps.resolve.outputs.rn-version }}
+        RN_MINOR: ${{ steps.resolve.outputs.rn-minor }}
+        INIT_MODE: ${{ steps.resolve.outputs.init-mode }}
+        NEW_ARCH: ${{ steps.resolve.outputs.new-arch }}
+        PLATFORM: ${{ inputs.platform }}
+        IOS_PACKAGE_MANAGER: ${{ inputs.ios-package-manager }}
+        ANDROID_ARCH: ${{ inputs.android-arch }}
+        MODULE_PATH: ${{ inputs.module-to-install }}
+        APP_FILE: ${{ inputs.app-file }}
+        WORK_DIR: ${{ runner.temp }}/rn-build-app
+      run: bash "$GITHUB_ACTION_PATH/../scripts/build-app.sh"
+
+    - name: Upload artifact
+      if: inputs.store-artifacts == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        # e.g. android-0.73-newArch-1 (rn-ver as given); "-spm" suffix for SPM builds
+        name: ${{ inputs.platform }}-${{ inputs.rn-ver }}-newArch-${{ steps.resolve.outputs.new-arch }}${{ inputs.ios-package-manager == 'spm' && inputs.platform == 'ios' && '-spm' || '' }}
+        if-no-files-found: error
+        retention-days: 14
+        path: ${{ steps.build.outputs.app_path }}
